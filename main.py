@@ -757,293 +757,195 @@ if st.button("Gerar documento preenchido"):
 # ==============================
 # RECIBOS DE SERVIÇOS JURÍDICOS
 # ==============================
-
-# ---------- Utilidades p/ moeda PT-BR ----------
-def parse_valor_brl(s: str) -> float:
-    """Converte '1.234,56' | '1234,56' | '1234.56' -> 1234.56 (float)."""
+def _parse_brl_money_to_float(s: str) -> float:
+    """
+    Converte string no padrão BR (ex.: "1.234,56" ou "1234,56" ou "1234.56") para float.
+    Retorna 0.0 se não for possível converter.
+    """
+    if s is None:
+        return 0.0
+    s = str(s).strip()
     if not s:
         return 0.0
-    s = s.strip().replace("R$", "").replace(" ", "")
-    s = s.replace(".", "").replace(",", ".")
+
+    # Remove "R$" e espaços
+    s = s.replace("R$", "").replace(" ", "")
+
+    # Se tiver vírgula, assume vírgula como decimal e ponto como milhar.
+    if "," in s:
+        s = s.replace(".", "").replace(",", ".")
+    # Se não tiver vírgula, mantém ponto como decimal (caso exista)
+
     try:
         return float(s)
-    except ValueError:
+    except Exception:
         return 0.0
 
 
-def formatar_brl(v: float) -> str:
-    """Formata 1234.56 -> '1.234,56'."""
-    return f"{v:,.2f}".replace(",", "X").replace(".", ",").replace("X", ".")
-
-
-def _extenso_0_999(n: int) -> str:
-    unidades = ["", "um", "dois", "três", "quatro", "cinco", "seis", "sete", "oito", "nove"]
+def _int_to_ptbr(n: int) -> str:
+    """
+    Converte inteiro 0..999_999_999 em extenso pt-BR (sem 'reais/centavos').
+    Implementação simples e suficiente para recibos.
+    """
+    unidades = ["zero", "um", "dois", "três", "quatro", "cinco", "seis", "sete", "oito", "nove"]
     dez_a_dezenove = ["dez", "onze", "doze", "treze", "quatorze", "quinze", "dezesseis", "dezessete", "dezoito", "dezenove"]
     dezenas = ["", "", "vinte", "trinta", "quarenta", "cinquenta", "sessenta", "setenta", "oitenta", "noventa"]
     centenas = ["", "cento", "duzentos", "trezentos", "quatrocentos", "quinhentos", "seiscentos", "setecentos", "oitocentos", "novecentos"]
-    if n == 0:
-        return ""
+
+    if n < 0:
+        return "menos " + _int_to_ptbr(-n)
+    if n < 10:
+        return unidades[n]
+    if 10 <= n < 20:
+        return dez_a_dezenove[n - 10]
+    if n < 100:
+        d, u = divmod(n, 10)
+        return dezenas[d] if u == 0 else f"{dezenas[d]} e {unidades[u]}"
     if n == 100:
         return "cem"
-    c = n // 100
-    d = (n % 100) // 10
-    u = n % 10
-    partes = []
-    if c:
-        partes.append(centenas[c])
-    if d == 1:
-        partes.append(dez_a_dezenove[u])
-    else:
-        if d:
-            partes.append(dezenas[d])
-        if u:
-            partes.append(unidades[u])
-    saida = ""
-    for p in partes:
-        saida = p if not saida else f"{saida} e {p}"
-    return saida
+    if n < 1000:
+        c, resto = divmod(n, 100)
+        return centenas[c] if resto == 0 else f"{centenas[c]} e {_int_to_ptbr(resto)}"
 
-
-def _bloco_extenso(n: int, singular: str, plural: str) -> str:
-    if n == 0:
-        return ""
-    if n == 1:
-        return f"um {singular}"
-    return f"{_extenso_0_999(n)} {plural}"
-
-
-def numero_para_moeda_ptbr(valor: float) -> str:
-    """
-    1234.56 -> 'Mil duzentos e trinta e quatro reais e cinquenta e seis centavos'
-    (primeira letra maiúscula).
-    """
-    if valor < 0:
-        frase = "menos " + numero_para_moeda_ptbr(-valor)
-        return frase[0].upper() + frase[1:]
-
-    inteiro = int(valor)
-    centavos = int(round((valor - inteiro) * 100))
-    bilhoes = inteiro // 1_000_000_000
-    resto = inteiro % 1_000_000_000
-    milhoes = resto // 1_000_000
-    resto %= 1_000_000
-    milhares = resto // 1_000
-    centenas = resto % 1_000
-
-    partes = []
-    if bilhoes:
-        partes.append(_bloco_extenso(bilhoes, "bilhão", "bilhões"))
-    if milhoes:
-        partes.append(_bloco_extenso(milhoes, "milhão", "milhões"))
-    if milhares:
-        partes.append("mil" if milhares == 1 else f"{_extenso_0_999(milhares)} mil")
-    if centenas:
-        partes.append(_extenso_0_999(centenas))
-
-    partes_reais = "zero" if not partes else " ".join(partes).replace("mil e ", "mil ")
-    sufx_reais = "real" if inteiro == 1 else "reais"
-    frase = f"{partes_reais} {sufx_reais}"
-
-    if centavos:
-        ext_cent = _extenso_0_999(centavos)
-        sufx_cent = "centavo" if centavos == 1 else "centavos"
-        frase += f" e {ext_cent} {sufx_cent}"
-
-    return frase[0].upper() + frase[1:] if frase else frase
-# ---------- fim utilidades moeda ----------
-
-st.divider()
-st.subheader("Recibo de serviços jurídicos")
-
-opcoes_recibo = [
-    "CONSULTORIA JURÍDICA",
-    "SEGUNDA PARCELA DOS HONORÁRIOS",
-    "PGTO PARCELADO",
-    "PGTO ÚNICO – PROCESSOS ADMINISTRATIVOS JUNTO AO INSS",
-    "PGTO – PRIMEIRA PARCELA DOS HONORÁRIOS PARCIAIS DO PROCESSO",
-    "PROCESSO DE ANÁLISE DE DESCONTOS DE ENTIDADES ASSOCIATIVAS",
-    "QUANDO AUXILIAMOS A FAZER A RECLAMAÇÃO",
-    "RECLAMAÇÃO DO CARTÃO CRÉDITO/DÉBITO",
-    "RESGATE TIT. CAPITALIZAÇÃO",
-    "SIMPLES",
-]
-
-# Caminho base do modelo .docx (robusto)
-DOCX_PATH_1 = asset_path("contratos_cadastro", "Recibo de servicos juridicos.docx")
-DOCX_PATH_2 = asset_path("Recibo de servicos juridicos.docx")  # fallback
-TEMPLATE_DOCX = DOCX_PATH_1 if os.path.exists(DOCX_PATH_1) else DOCX_PATH_2
-
-selecionada = st.selectbox("Selecione o tipo de recibo:", opcoes_recibo, index=0, key="tipo_recibo")
-
-# ---- Campos extras apenas para "CONSULTORIA JURÍDICA"
-valor_str = ""
-hora = ""
-valor_extenso_auto = ""
-valor_formatado = ""
-
-if selecionada == "CONSULTORIA JURÍDICA":
-    colv1, colv2 = st.columns([1, 1])
-    with colv1:
-        valor_str = st.text_input("VALOR (R$) — {VALOR}", placeholder="300,00")
-    with colv2:
-        hora = st.text_input("HORA — {HORA}", placeholder="11:00")
-
-    valor_float = parse_valor_brl(valor_str)
-    valor_formatado = formatar_brl(valor_float) if valor_str else ""
-    valor_extenso_auto = numero_para_moeda_ptbr(valor_float)  # já vem com inicial maiúscula
-
-    editar_extenso = st.checkbox("Editar valor por extenso manualmente?", value=False)
-    st.text_input(
-        "VALOR_EXTENSO — ({VALOR_EXTENSO})",
-        value=valor_extenso_auto,
-        disabled=not editar_extenso,
-        key="valor_extenso"
-    )
-
-# ---- Placeholders
-data_extenso = formatar_data_extenso(dados.get("DATA", ""), dados.get("CIDADE", ""), dados.get("UF", ""))
-
-valor_extenso_final = st.session_state.get("valor_extenso") or valor_extenso_auto  # já capitalizado na função
-
-placeholders = {
-    "{CLIENTE}": dados.get("CLIENTE", ""),
-    "{CPF}": dados.get("CPF", ""),
-    "{VALOR}": valor_formatado if selecionada == "CONSULTORIA JURÍDICA" else "",
-    "{VALOR_EXTENSO}": valor_extenso_final if selecionada == "CONSULTORIA JURÍDICA" else "",
-    "{DATA}": dados.get("DATA", ""),
-    "{HORA}": hora if selecionada == "CONSULTORIA JURÍDICA" else "",
-    "{CIDADE}": dados.get("CIDADE", ""),
-    "{UF}": dados.get("UF", ""),
-    "{DATA em extenso}": data_extenso,
-    "{DATA_EXTENSO}": data_extenso,
-}
-
-# ---- Texto padrão do recibo "CONSULTORIA JURÍDICA"
-texto_base_consultoria = (
-    "Recebi de {CLIENTE}, portador (a) do CPF {CPF}, a importância de R$ {VALOR} ({VALOR_EXTENSO}), "
-    "face à consultoria jurídica realizada no dia {DATA}, às {HORA} horas, qual dou plena quitação.\n\n"
-)
-
-
-def preencher_texto(modelo: str, mapping: dict) -> str:
-    out = modelo
-    for k, v in mapping.items():
-        out = out.replace(k, v if v is not None else "")
-    return out
-
-
-# ---- Pré-visualização (preenche apenas para a opção "CONSULTORIA JURÍDICA")
-preview_text = ""
-preview_editado = ""
-if selecionada == "CONSULTORIA JURÍDICA":
-    preview_text = preencher_texto(texto_base_consultoria, placeholders)
-
-    st.markdown("**Pré-visualização (editável):**")
-    preview_editado = st.text_area(
-        "Você pode ajustar o texto antes de gerar o arquivo:",
-        value=preview_text,
-        height=220
-    )
-
-
-# ---- Utilidades de manipulação do .docx
-def replace_in_paragraph(paragraph, mapping: dict):
-    novo = preencher_texto(paragraph.text, mapping)
-    if novo != paragraph.text:
-        paragraph.text = novo  # substitui placeholders; perde estilos de runs
-
-
-def replace_in_table(table, mapping: dict):
-    for row in table.rows:
-        for cell in row.cells:
-            for p in cell.paragraphs:
-                replace_in_paragraph(p, mapping)
-
-
-def _inserir_3_linhas_apos_titulo(doc: Document, titulo_ref: str, linhas: List[str]):
-    """
-    Procura o parágrafo com 'titulo_ref' e insere os itens de 'linhas'
-    protocolarmente 3 linhas abaixo. Cria parágrafos vazios se necessário.
-    """
-    titulo_ref_upper = titulo_ref.upper()
-    for i, p in enumerate(doc.paragraphs):
-        if titulo_ref_upper in (p.text or "").upper():
-            insert_index = i + 3
-            while len(doc.paragraphs) <= insert_index:
-                doc.add_paragraph("")
-            for linha in linhas:
-                doc.paragraphs[insert_index].insert_paragraph_before(linha)
-                insert_index += 1
-            break
-
-
-def render_docx_from_template(
-    template_path: str,
-    mapping: dict,
-    linhas_consultoria: List[str] | None = None,
-    data_extenso_str: str = ""
-) -> BytesIO:
-    doc = Document(template_path)
-
-    # 1) substitui placeholders existentes
-    for p in doc.paragraphs:
-        replace_in_paragraph(p, mapping)
-    for t in doc.tables:
-        replace_in_table(t, mapping)
-
-    # 2) insere o texto 3 linhas abaixo do título
-    if linhas_consultoria:
-        _inserir_3_linhas_apos_titulo(doc, "RECIBO DE PAGAMENTO", linhas_consultoria)
-
-    # 3) insere {DATA em extenso} 2 linhas acima de "MARCELA DA SILVA PAULO" (à direita)
-    if data_extenso_str:
-        alvo_upper = "MARCELA DA SILVA PAULO"
-        for i, p in enumerate(doc.paragraphs):
-            if alvo_upper in (p.text or "").upper():
-                insert_index = max(i - 2, 0)
-                novo = doc.paragraphs[insert_index].insert_paragraph_before(data_extenso_str)
-                novo.alignment = 2  # right
-                break
-
-    bio = BytesIO()
-    doc.save(bio)
-    bio.seek(0)
-    return bio
-
-
-# ---- Botões de geração/Download
-colg1, colg2 = st.columns([1, 1])
-with colg1:
-    gerar = st.button("🔄 Gerar arquivo (.docx)")
-with colg2:
-    st.write("")
-
-if gerar:
-    if not os.path.exists(TEMPLATE_DOCX):
-        st.error(
-            "❌ Arquivo base não encontrado.\n"
-            f"Verifique:\n- {DOCX_PATH_1}\n- {DOCX_PATH_2}"
-        )
-    else:
-        if selecionada == "CONSULTORIA JURÍDICA":
-            texto_final_consultoria = preview_editado or preencher_texto(texto_base_consultoria, placeholders)
+    def _grupo(n_: int, singular: str, plural: str) -> str:
+        q, r = n_
+        if q == 0:
+            return ""
+        nome = singular if q == 1 else plural
+        if q == 1 and singular == "mil":
+            parte = "mil"
         else:
-            texto_final_consultoria = preencher_texto(texto_base_consultoria, placeholders)
+            parte = f"{_int_to_ptbr(q)} {nome}"
+        if r == 0:
+            return parte
+        # regra do "e" entre grupos: usa "e" quando o resto < 100 ou é múltiplo de 100
+        conj = " e " if r < 100 or r % 100 == 0 else ", "
+        return f"{parte}{conj}{_int_to_ptbr(r)}"
 
-        linhas_para_inserir = [linha for linha in texto_final_consultoria.split("\n")]
+    if n < 1_000_000:
+        q, r = divmod(n, 1000)
+        return _grupo((q, r), "mil", "mil")
 
-        buffer_docx = render_docx_from_template(
-            TEMPLATE_DOCX,
-            placeholders,
-            linhas_consultoria=linhas_para_inserir,
-            data_extenso_str=placeholders.get("{DATA em extenso}", "")
+    if n < 1_000_000_000:
+        q, r = divmod(n, 1_000_000)
+        return _grupo((q, r), "milhão", "milhões")
+
+    # fora do escopo
+    return str(n)
+
+
+def valor_por_extenso_brl(valor: float) -> str:
+    """
+    Ex.: 236.87 -> "duzentos e trinta e seis reais e oitenta e sete centavos"
+    """
+    try:
+        valor = float(valor)
+    except Exception:
+        valor = 0.0
+
+    if valor < 0:
+        return "menos " + valor_por_extenso_brl(abs(valor))
+
+    reais = int(valor)
+    centavos = int(round((valor - reais) * 100))
+
+    # correção de arredondamento (ex.: 1.999 -> 2.00)
+    if centavos == 100:
+        reais += 1
+        centavos = 0
+
+    if reais == 0:
+        parte_reais = "zero reais"
+    elif reais == 1:
+        parte_reais = "um real"
+    else:
+        parte_reais = f"{_int_to_ptbr(reais)} reais"
+
+    if centavos == 0:
+        return parte_reais
+
+    if centavos == 1:
+        parte_cent = "um centavo"
+    else:
+        parte_cent = f"{_int_to_ptbr(centavos)} centavos"
+
+    return f"{parte_reais} e {parte_cent}"
+
+
+def render_recibo_servicos_juridicos():
+    st.header("Recibo de serviços jurídicos")
+
+    tipo_recibo = st.selectbox(
+        "Selecione o tipo de recibo:",
+        ["CONSULTORIA JURÍDICA", "ELABORAÇÃO DE PEÇA PROCESSUAL", "AUDIÊNCIA", "DILIGÊNCIA", "OUTROS"],
+        key="recibo_tipo",
+    )
+
+    col1, col2 = st.columns(2)
+    with col1:
+        valor_str = st.text_input(
+            "VALOR (R$) — {VALOR}",
+            value=st.session_state.get("recibo_valor_str", ""),
+            placeholder="Ex.: 236,87",
+            key="recibo_valor_str",
+        )
+    with col2:
+        # mantém a hora fixa por padrão, mas permite editar se quiser
+        hora = st.text_input(
+            "HORA — {HORA}",
+            value=st.session_state.get("recibo_hora", datetime.now().strftime("%H:%M")),
+            key="recibo_hora",
         )
 
-        st.success("✅ Arquivo gerado. Clique para baixar:")
-        st.download_button(
-            label="📥 Baixar Recibo (.docx)",
-            data=buffer_docx,
-            file_name="Recibo_de_servicos_juridicos.docx",
-            mime="application/vnd.openxmlformats-officedocument.wordprocessingml.document"
-        )
+    # Converte valor BRL para float
+    valor_float = _parse_brl_money_to_float(valor_str)
 
+    editar_extenso = st.checkbox("Editar valor por extenso manualmente?", key="recibo_editar_extenso")
+
+    # Atualização automática do extenso:
+    # - Se NÃO estiver editando manualmente, sempre recalcula com base no valor digitado.
+    # - Isso evita o problema clássico do Streamlit: o widget "trava" o value inicial quando tem key.
+    if not editar_extenso:
+        st.session_state["recibo_valor_extenso"] = valor_por_extenso_brl(valor_float).capitalize()
+
+    valor_extenso = st.text_input(
+        "VALOR_EXTENSO — ({VALOR_EXTENSO})",
+        value=st.session_state.get("recibo_valor_extenso", "Zero reais"),
+        key="recibo_valor_extenso",
+        disabled=not editar_extenso,
+    )
+
+    st.subheader("Pré-visualização (editável):")
+    st.caption("Você pode ajustar o texto antes de gerar o arquivo:")
+
+    hoje = datetime.now().strftime("%d/%m/%Y")
+
+    # Ajuste aqui para usar seus campos reais de cliente, se existirem no seu app:
+    nome = st.session_state.get("CLIENTE", "NOME DO CLIENTE")
+    cpf = st.session_state.get("CPF", "CPF DO CLIENTE")
+
+    texto_padrao = (
+        f"Recebi de {nome}, portador(a) do CPF {cpf}, a importância de R$ {valor_str or '0,00'} "
+        f"({valor_extenso}), face à {tipo_recibo.lower()} realizada no dia {hoje}, às {hora} horas, "
+        f"qual dou plena quitação."
+    )
+
+    recibo_texto = st.text_area(
+        "Texto do recibo",
+        value=st.session_state.get("recibo_texto", texto_padrao),
+        height=220,
+        key="recibo_texto",
+    )
+
+    # Aqui você pode plugar sua função de geração de DOCX/PDF conforme seu projeto.
+    # Exemplo simples: apenas baixar TXT.
+    st.download_button(
+        "Baixar recibo (TXT)",
+        data=recibo_texto.encode("utf-8"),
+        file_name=f"recibo_{hoje.replace('/','-')}.txt",
+        mime="text/plain",
+    )
+
+
+# Chame essa função no seu menu/roteamento quando a opção "Recibo" for selecionada.
+# Ex.: if opcao == "RECIBO": render_recibo_servicos_juridicos()
