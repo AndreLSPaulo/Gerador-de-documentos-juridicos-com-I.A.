@@ -1,6 +1,6 @@
 streamlit
 openpyxl
 python-docx
-pillow
-pytesseract
-pandas
+python-dotenv
+openai
+
