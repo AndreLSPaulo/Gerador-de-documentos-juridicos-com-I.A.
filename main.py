@@ -7,7 +7,6 @@ import os
 import base64
 from datetime import datetime
 import json
-import re
 from openai import OpenAI
 from dotenv import load_dotenv
 from pathlib import Path
@@ -893,13 +892,27 @@ if selecionada == "CONSULTORIA JURÍDICA":
     valor_formatado = formatar_brl(valor_float) if valor_str else ""
     valor_extenso_auto = numero_para_moeda_ptbr(valor_float)  # já vem com inicial maiúscula
 
-    editar_extenso = st.checkbox("Editar valor por extenso manualmente?", value=False)
+    editar_extenso = st.checkbox("Editar valor por extenso manualmente?", key="recibo_manual_extenso")
+
+# Sempre recalcula o extenso quando o VALOR muda.
+# Atenção: em Streamlit, widgets com `key` guardam o valor no session_state;
+# se você usar `value=...` com a mesma key, o Streamlit só aplica o value na 1ª execução.
+# Por isso, aqui nós atualizamos explicitamente o session_state do campo "somente leitura".
+if st.session_state["recibo_manual_extenso"]:
     st.text_input(
         "VALOR_EXTENSO — ({VALOR_EXTENSO})",
-        value=valor_extenso_auto,
-        disabled=not editar_extenso,
-        key="valor_extenso"
+        placeholder=valor_extenso_auto,
+        key="recibo_valor_extenso_manual",
     )
+    valor_extenso_final = (st.session_state.get("recibo_valor_extenso_manual") or "").strip() or valor_extenso_auto
+else:
+    st.session_state["recibo_valor_extenso_display"] = valor_extenso_auto
+    st.text_input(
+        "VALOR_EXTENSO — ({VALOR_EXTENSO})",
+        key="recibo_valor_extenso_display",
+        disabled=True,
+    )
+    valor_extenso_final = valor_extenso_auto
 
 # ---- Placeholders
 data_extenso = formatar_data_extenso(dados.get("DATA", ""), dados.get("CIDADE", ""), dados.get("UF", ""))
