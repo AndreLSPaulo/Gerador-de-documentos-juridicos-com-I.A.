@@ -7,6 +7,7 @@ import os
 import base64
 from datetime import datetime
 import json
+import re
 from openai import OpenAI
 from dotenv import load_dotenv
 from pathlib import Path
@@ -853,161 +854,98 @@ def numero_para_moeda_ptbr(valor: float) -> str:
 # ---------- fim utilidades moeda ----------
 
 st.divider()
-
-# ==============================
-# BLOCO — RECIBO (corrigido)
-# ==============================
-
-def numero_para_moeda_ptbr(valor: float) -> str:
-    """
-    1234.56 -> 'Mil duzentos e trinta e quatro reais e cinquenta e seis centavos'
-    (primeira letra maiúscula).
-    """
-    if valor < 0:
-        frase = "menos " + numero_para_moeda_ptbr(-valor)
-        return frase[0].upper() + frase[1:]
-
-    inteiro = int(valor)
-    centavos = int(round((valor - inteiro) * 100))
-    bilhoes = inteiro // 1_000_000_000
-    resto = inteiro % 1_000_000_000
-    milhoes = resto // 1_000_000
-    resto %= 1_000_000
-    milhares = resto // 1_000
-    centenas = resto % 1_000
-
-    partes = []
-    if bilhoes:
-        partes.append(_bloco_extenso(bilhoes, "bilhão", "bilhões"))
-    if milhoes:
-        partes.append(_bloco_extenso(milhoes, "milhão", "milhões"))
-    if milhares:
-        partes.append("mil" if milhares == 1 else f"{_extenso_0_999(milhares)} mil")
-    if centenas:
-        partes.append(_extenso_0_999(centenas))
-
-    partes_reais = "zero" if not partes else " ".join(partes).replace("mil e ", "mil ")
-    sufx_reais = "real" if inteiro == 1 else "reais"
-    frase = f"{partes_reais} {sufx_reais}"
-
-    if centavos:
-        ext_cent = _extenso_0_999(centavos)
-        sufx_cent = "centavo" if centavos == 1 else "centavos"
-        frase += f" e {ext_cent} {sufx_cent}"
-
-    return frase[0].upper() + frase[1:] if frase else frase
-
-
-
-def _parse_valor_brl(s: str) -> float:
-    """Converte '1.234,56' ou '1234,56' em float 1234.56. Vazio/invalid -> 0.0"""
-    if not s:
-        return 0.0
-    s = str(s).strip()
-    # mantém só dígitos e separadores
-    s = re.sub(r"[^\d,\.]", "", s)
-    if not s:
-        return 0.0
-    # se tem vírgula, assume vírgula como decimal e remove pontos de milhar
-    if "," in s:
-        s = s.replace(".", "").replace(",", ".")
-    try:
-        return float(s)
-    except ValueError:
-        return 0.0
-
-
-# --- SessionState (para não "resetar" os campos a cada rerun) ---
-_recibo_defaults = {
-    "recibo_tipo": "CONSULTORIA JURÍDICA",
-    "recibo_valor_str": "",
-    "recibo_hora": datetime.now().strftime("%H:%M"),
-    "recibo_manual_extenso": False,
-    "recibo_valor_extenso_manual": "",
-    "recibo_preview": "",
-}
-for _k, _v in _recibo_defaults.items():
-    st.session_state.setdefault(_k, _v)
-
 st.subheader("Recibo de serviços jurídicos")
 
-# 1) Tipo
-tipo_recibo = st.selectbox(
-    "Selecione o tipo de recibo:",
-    options=[
-        "CONSULTORIA JURÍDICA",
-        "ELABORAÇÃO DE PEÇA PROCESSUAL",
-        "AUDIÊNCIA",
-        "DILIGÊNCIA",
-        "OUTROS",
-    ],
-    key="recibo_tipo",
-)
+opcoes_recibo = [
+    "CONSULTORIA JURÍDICA",
+    "SEGUNDA PARCELA DOS HONORÁRIOS",
+    "PGTO PARCELADO",
+    "PGTO ÚNICO – PROCESSOS ADMINISTRATIVOS JUNTO AO INSS",
+    "PGTO – PRIMEIRA PARCELA DOS HONORÁRIOS PARCIAIS DO PROCESSO",
+    "PROCESSO DE ANÁLISE DE DESCONTOS DE ENTIDADES ASSOCIATIVAS",
+    "QUANDO AUXILIAMOS A FAZER A RECLAMAÇÃO",
+    "RECLAMAÇÃO DO CARTÃO CRÉDITO/DÉBITO",
+    "RESGATE TIT. CAPITALIZAÇÃO",
+    "SIMPLES",
+]
 
-# 2) Valor e Hora
-col1, col2 = st.columns(2)
-with col1:
-    st.text_input("VALOR (R$) — {VALOR}", placeholder="300,00", key="recibo_valor_str")
-with col2:
-    st.text_input("HORA — {HORA}", placeholder="10:35", key="recibo_hora")
+# Caminho base do modelo .docx (robusto)
+DOCX_PATH_1 = asset_path("contratos_cadastro", "Recibo de servicos juridicos.docx")
+DOCX_PATH_2 = asset_path("Recibo de servicos juridicos.docx")  # fallback
+TEMPLATE_DOCX = DOCX_PATH_1 if os.path.exists(DOCX_PATH_1) else DOCX_PATH_2
 
-# 3) Extenso (auto / manual)
-st.checkbox("Editar valor por extenso manualmente?", key="recibo_manual_extenso")
+selecionada = st.selectbox("Selecione o tipo de recibo:", opcoes_recibo, index=0, key="tipo_recibo")
 
-valor_float = _parse_valor_brl(st.session_state["recibo_valor_str"])
-valor_extenso_auto = numero_para_moeda_ptbr(valor_float)
+# ---- Campos extras apenas para "CONSULTORIA JURÍDICA"
+valor_str = ""
+hora = ""
+valor_extenso_auto = ""
+valor_formatado = ""
 
-if st.session_state["recibo_manual_extenso"]:
-    st.text_input(
-        "VALOR_EXTENSO — ({VALOR_EXTENSO})",
-        placeholder=valor_extenso_auto,
-        key="recibo_valor_extenso_manual",
-    )
-    valor_extenso_final = st.session_state["recibo_valor_extenso_manual"].strip() or valor_extenso_auto
-else:
+if selecionada == "CONSULTORIA JURÍDICA":
+    colv1, colv2 = st.columns([1, 1])
+    with colv1:
+        valor_str = st.text_input("VALOR (R$) — {VALOR}", placeholder="300,00")
+    with colv2:
+        hora = st.text_input("HORA — {HORA}", placeholder="11:00")
+
+    valor_float = parse_valor_brl(valor_str)
+    valor_formatado = formatar_brl(valor_float) if valor_str else ""
+    valor_extenso_auto = numero_para_moeda_ptbr(valor_float)  # já vem com inicial maiúscula
+
+    editar_extenso = st.checkbox("Editar valor por extenso manualmente?", value=False)
     st.text_input(
         "VALOR_EXTENSO — ({VALOR_EXTENSO})",
         value=valor_extenso_auto,
-        disabled=True,
-        key="recibo_valor_extenso_readonly",
+        disabled=not editar_extenso,
+        key="valor_extenso"
     )
-    valor_extenso_final = valor_extenso_auto
 
-# 4) Texto base do recibo
-nome_cliente = (dados.get("CLIENTE") or st.session_state.get("CLIENTE") or "CLIENTE").strip()
-cpf_cliente = (dados.get("CPF") or st.session_state.get("CPF") or "CPF").strip()
-data_recibo = datetime.now().strftime("%d/%m/%Y")
-hora_recibo = st.session_state["recibo_hora"].strip() or datetime.now().strftime("%H:%M")
+# ---- Placeholders
+data_extenso = formatar_data_extenso(dados.get("DATA", ""), dados.get("CIDADE", ""), dados.get("UF", ""))
 
-valor_brl_format = f"{valor_float:,.2f}".replace(",", "X").replace(".", ",").replace("X", ".")
+valor_extenso_final = st.session_state.get("valor_extenso") or valor_extenso_auto  # já capitalizado na função
 
-texto_base = (
-    f"Recebi de {nome_cliente}, portador(a) do CPF {cpf_cliente}, a importância de R$ {valor_brl_format} "
-    f"({valor_extenso_final}), face à {tipo_recibo.lower()} realizada no dia {data_recibo}, "
-    f"às {hora_recibo} horas, qual dou plena quitação."
+placeholders = {
+    "{CLIENTE}": dados.get("CLIENTE", ""),
+    "{CPF}": dados.get("CPF", ""),
+    "{VALOR}": valor_formatado if selecionada == "CONSULTORIA JURÍDICA" else "",
+    "{VALOR_EXTENSO}": valor_extenso_final if selecionada == "CONSULTORIA JURÍDICA" else "",
+    "{DATA}": dados.get("DATA", ""),
+    "{HORA}": hora if selecionada == "CONSULTORIA JURÍDICA" else "",
+    "{CIDADE}": dados.get("CIDADE", ""),
+    "{UF}": dados.get("UF", ""),
+    "{DATA em extenso}": data_extenso,
+    "{DATA_EXTENSO}": data_extenso,
+}
+
+# ---- Texto padrão do recibo "CONSULTORIA JURÍDICA"
+texto_base_consultoria = (
+    "Recebi de {CLIENTE}, portador (a) do CPF {CPF}, a importância de R$ {VALOR} ({VALOR_EXTENSO}), "
+    "face à consultoria jurídica realizada no dia {DATA}, às {HORA} horas, qual dou plena quitação.\n\n"
 )
 
-# 5) Preview editável (persistente)
-# Só define o texto inicial uma única vez, para não sobrescrever o que você edita manualmente
-if not st.session_state["recibo_preview"]:
-    st.session_state["recibo_preview"] = texto_base
 
-st.text_area(
-    "Pré-visualização (editável):",
-    height=220,
-    key="recibo_preview",
-)
+def preencher_texto(modelo: str, mapping: dict) -> str:
+    out = modelo
+    for k, v in mapping.items():
+        out = out.replace(k, v if v is not None else "")
+    return out
 
-colb1, colb2 = st.columns([1, 1])
-with colb1:
-    if st.button("Regerar texto automaticamente"):
-        st.session_state["recibo_preview"] = texto_base
-        st.rerun()
-with colb2:
-    if st.button("Limpar campos do recibo"):
-        for _k, _v in _recibo_defaults.items():
-            st.session_state[_k] = _v
-        st.rerun()
+
+# ---- Pré-visualização (preenche apenas para a opção "CONSULTORIA JURÍDICA")
+preview_text = ""
+preview_editado = ""
+if selecionada == "CONSULTORIA JURÍDICA":
+    preview_text = preencher_texto(texto_base_consultoria, placeholders)
+
+    st.markdown("**Pré-visualização (editável):**")
+    preview_editado = st.text_area(
+        "Você pode ajustar o texto antes de gerar o arquivo:",
+        value=preview_text,
+        height=220
+    )
+
 
 # ---- Utilidades de manipulação do .docx
 def replace_in_paragraph(paragraph, mapping: dict):
